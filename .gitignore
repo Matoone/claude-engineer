@@ -1,3 +1,4 @@
 .env
 code_execution_env
 output
+__pycache__/

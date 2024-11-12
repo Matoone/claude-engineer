@@ -33,6 +33,8 @@ import subprocess
 import shutil
 from typing import AsyncIterable
 
+from tools.tavily import tavily_search
+
 # Configure logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -1174,13 +1176,6 @@ def list_files(path="."):
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
-def tavily_search(query):
-    try:
-        response = tavily.qna_search(query=query, search_depth="advanced")
-        return response
-    except Exception as e:
-        return f"Error performing search: {str(e)}"
-
 def stop_process(process_id):
     global running_processes
     if process_id in running_processes:
@@ -1734,7 +1729,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
         elif tool_name == "list_files":
             result = list_files(tool_input.get("path", "."))
         elif tool_name == "tavily_search":
-            result = tavily_search(tool_input["query"])
+            result = tavily_search(tool_input["query"], tavily_api_key)
         elif tool_name == "stop_process":
             result = stop_process(tool_input["process_id"])
         elif tool_name == "execute_code":
