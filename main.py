@@ -56,6 +56,42 @@ use_tts = False
 ELEVEN_LABS_API_KEY = os.getenv('ELEVEN_LABS_API_KEY')
 VOICE_ID = 'YOUR VOICE ID'
 MODEL_ID = 'eleven_turbo_v2_5'
+OUTPUT_DIR = os.path.join(os.getcwd(), "output")
+
+def display_help():
+    console.print(Panel(
+        Markdown("""## 🚀 Basic Usage
+
+Run the main script to start the Claude Engineer interface:
+```
+python main.py
+```
+
+You can interact with Claude Engineer by typing your queries or commands. Some example interactions:
+
+- "Create a new Python project structure for a web application"
+- "Explain the code in file.py and suggest improvements"
+- "Search for the latest best practices in React development"
+- "Help me debug this error: [paste your error message]"
+- "Analyze this image and describe its contents"
+- "Execute this Python code and analyze the results"
+- "Read multiple files: file1.py, file2.py, file3.py"
+
+## Special Commands
+- Type 'exit' to end the conversation and close the application
+- Type 'help' to display this help message
+- Type 'image' to include an image in your message for analysis
+- Type 'reset' to reset the entire conversation without restarting the script
+- Type 'automode number' to enter Autonomous mode with a specific number of iterations
+- Type 'save chat' to save the current chat log
+- Type '11labs on' to enable text-to-speech
+- Type '11labs off' to disable text-to-speech
+- Type 'voice' to enter voice input mode
+- Press Ctrl+C at any time to exit the automode and return to regular chat"""),
+        title="Claude Engineer Help",
+        border_style="cyan",
+        padding=(1, 2)
+    ))
 
 def is_installed(lib_name):
     return shutil.which(lib_name) is not None
@@ -168,16 +204,40 @@ async def text_to_speech(text):
         console.print("Fallback: Printing the text instead.", style="bold yellow")
         console.print(text)
 
+def is_running_in_wsl():
+    try:
+        with open('/proc/version', 'r') as f:
+            return 'microsoft' in f.read().lower()
+    except:
+        return False
+
 def initialize_speech_recognition():
     global recognizer, microphone
-    recognizer = sr.Recognizer()
-    microphone = sr.Microphone()
     
-    # Adjust for ambient noise
-    with microphone as source:
-        recognizer.adjust_for_ambient_noise(source, duration=1)
-    
-    logging.info("Speech recognition initialized")
+    # Check if running in WSL
+    if is_running_in_wsl():
+        console.print(Panel(
+            "Voice recognition is not supported in WSL2 due to limited audio device access. "
+            "Please use the Windows version directly or run the application in native Linux for voice features.",
+            title="Voice Recognition Unavailable",
+            style="bold yellow"
+        ))
+        raise SystemExit()
+
+    try:
+        import speech_recognition as sr
+        recognizer = sr.Recognizer()
+        microphone = sr.Microphone()
+        
+        # Adjust for ambient noise
+        with microphone as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+        
+        logging.info("Speech recognition initialized")
+    except Exception as e:
+        console.print(Panel(f"Error initializing speech recognition: {str(e)}", title="Error", style="bold red"))
+        logging.error(f"Error in speech recognition initialization: {str(e)}")
+        raise
 
 async def voice_input(max_retries=3):
     global recognizer, microphone
@@ -538,11 +598,12 @@ def create_folders(paths):
     results = []
     for path in paths:
         try:
-            # Use os.makedirs with exist_ok=True to create nested directories
-            os.makedirs(path, exist_ok=True)
-            results.append(f"Folder(s) created: {path}")
+            # Ensure path is within OUTPUT_DIR
+            full_path = os.path.join(OUTPUT_DIR, path.lstrip('/').lstrip('\\'))
+            os.makedirs(full_path, exist_ok=True)
+            results.append(f"Folder(s) created: {full_path}")
         except Exception as e:
-            results.append(f"Error creating folder(s) {path}: {str(e)}")
+            results.append(f"Error creating folder(s) {full_path}: {str(e)}")
     return "\n".join(results)
 
 def create_files(files):
@@ -559,6 +620,9 @@ def create_files(files):
     elif not isinstance(files, list):
         return "Error: Invalid input type for create_files. Expected string, dict, or list."
     
+    # Create output directory if it doesn't exist
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
     for file in files:
         try:
             if not isinstance(file, dict):
@@ -572,17 +636,30 @@ def create_files(files):
                 results.append(f"Error: Missing 'path' for file")
                 continue
             
-            dir_name = os.path.dirname(path)
+            # Ensure content is a string
+            if not isinstance(content, str):
+                results.append(f"Error: Content must be a string for file {path}")
+                continue
+                
+            # Convert path to be within OUTPUT_DIR
+            full_path = os.path.join(OUTPUT_DIR, path.lstrip('/').lstrip('\\'))
+            dir_name = os.path.dirname(full_path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
             
-            with open(path, 'w') as f:
+            # Write the content string to the file
+            with open(full_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             
-            file_contents[path] = content
-            results.append(f"File created and added to system prompt: {path}")
+            # Store the relative path in file_contents
+            file_contents[path] = content  # Store with original path as key
+            results.append(f"File created and added to system prompt: {full_path}")
+            
+            logging.info(f"Created file: {full_path}")
         except Exception as e:
-            results.append(f"Error creating file: {str(e)}")
+            error_message = f"Error creating file {file.get('path', 'unknown')}: {str(e)}"
+            results.append(error_message)
+            logging.error(error_message)
     
     return "\n".join(results)
 
@@ -808,12 +885,23 @@ async def edit_and_apply_multiple(files, project_context, is_automode=False):
         instructions = file['instructions']
         logging.info(f"Processing file: {path}")
         try:
+            # Convert path to be within OUTPUT_DIR for file operations
+            full_path = os.path.join(OUTPUT_DIR, path.lstrip('/').lstrip('\\'))
             original_content = file_contents.get(path, "")
             if not original_content:
                 logging.info(f"Reading content for file: {path}")
-                with open(path, 'r') as f:
-                    original_content = f.read()
-                file_contents[path] = original_content
+                try:
+                    with open(full_path, 'r') as f:
+                        original_content = f.read()
+                    file_contents[path] = original_content
+                except FileNotFoundError:
+                    logging.error(f"File not found: {full_path}")
+                    results.append({
+                        "path": path,
+                        "status": "error",
+                        "message": f"File not found: {path}"
+                    })
+                    continue
 
             logging.info(f"Generating edit instructions for file: {path}")
             edit_instructions = await generate_edit_instructions(path, original_content, instructions, project_context, file_contents)
@@ -835,6 +923,12 @@ async def edit_and_apply_multiple(files, project_context, is_automode=False):
                 console_outputs.append(console_output)
 
                 if changes_made:
+                    # Create directory if it doesn't exist
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    # Write changes to the file in output directory
+                    with open(full_path, 'w') as f:
+                        f.write(edited_content)
+                    
                     file_contents[path] = edited_content
                     console.print(Panel(f"File contents updated in system prompt: {path}", style="green"))
                     logging.info(f"Changes applied to file: {path}")
@@ -894,6 +988,9 @@ async def apply_edits(file_path, edit_instructions, original_content):
     failed_edits = []
     console_output = []
 
+    # Convert file_path to be within OUTPUT_DIR while preserving original path for logs
+    full_path = os.path.join(OUTPUT_DIR, file_path.lstrip('/').lstrip('\\'))
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -906,36 +1003,21 @@ async def apply_edits(file_path, edit_instructions, original_content):
         for i, edit in enumerate(edit_instructions, 1):
             search_content = edit['search'].strip()
             replace_content = edit['replace'].strip()
-            similarity = edit['similarity']
-
-            # Use regex to find the content, ignoring leading/trailing whitespace
+            
             pattern = re.compile(re.escape(search_content), re.DOTALL)
             match = pattern.search(edited_content)
-
-            if match or (USE_FUZZY_SEARCH and similarity >= 0.8):
-                if not match:
-                    # If using fuzzy search and no exact match, find the best match
-                    best_match = difflib.get_close_matches(search_content, [edited_content], n=1, cutoff=0.6)
-                    if best_match:
-                        match = re.search(re.escape(best_match[0]), edited_content)
-
-                if match:
-                    # Replace the content using re.sub for more robust replacement
-                    replace_content_cleaned = re.sub(r'</?SEARCH>|</?REPLACE>', '', replace_content)
-                    edited_content = pattern.sub(replace_content_cleaned, edited_content, count=1)
-                    changes_made = True
-
-                    # Display the diff for this edit
-                    diff_result = generate_diff(search_content, replace_content, file_path)
-                    console.print(Panel(diff_result, title=f"Changes in {file_path} ({i}/{total_edits}) - Similarity: {similarity:.2f}", style="cyan"))
-                    console_output.append(f"Edit {i}/{total_edits} applied successfully")
-                else:
-                    message = f"Edit {i}/{total_edits} not applied: content not found (Similarity: {similarity:.2f})"
-                    console_output.append(message)
-                    console.print(Panel(message, style="yellow"))
-                    failed_edits.append(f"Edit {i}: {search_content}")
+            
+            if match:
+                start, end = match.span()
+                replace_content_cleaned = re.sub(r'</?SEARCH>|</?REPLACE>', '', replace_content)
+                edited_content = edited_content[:start] + replace_content_cleaned + edited_content[end:]
+                changes_made = True
+                
+                diff_result = generate_diff(search_content, replace_content, file_path)
+                console.print(Panel(diff_result, title=f"Changes in {file_path} ({i}/{total_edits})", style="cyan"))
+                console_output.append(f"Edit {i}/{total_edits} applied successfully")
             else:
-                message = f"Edit {i}/{total_edits} not applied: content not found (Similarity: {similarity:.2f})"
+                message = f"Edit {i}/{total_edits} not applied: content not found"
                 console_output.append(message)
                 console.print(Panel(message, style="yellow"))
                 failed_edits.append(f"Edit {i}: {search_content}")
@@ -947,14 +1029,16 @@ async def apply_edits(file_path, edit_instructions, original_content):
         console_output.append(message)
         console.print(Panel(message, style="green"))
     else:
-        # Write the changes to the file
-        with open(file_path, 'w') as file:
+        # Write the changes to the file in the output directory
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, 'w') as file:
             file.write(edited_content)
-        message = f"Changes have been written to {file_path}"
+        message = f"Changes have been written to {full_path}"
         console_output.append(message)
         console.print(Panel(message, style="green"))
 
     return edited_content, changes_made, failed_edits, "\n".join(console_output)
+
 
 
 def highlight_diff(diff_text):
@@ -1038,7 +1122,6 @@ async def execute_code(code, timeout=10):
         except OSError:
             pass  # Ignore errors in removing the file
 
-# Update the read_multiple_files function to handle both single and multiple files
 def read_multiple_files(paths, recursive=False):
     global file_contents
     results = []
@@ -1048,7 +1131,9 @@ def read_multiple_files(paths, recursive=False):
 
     for path in paths:
         try:
-            abs_path = os.path.abspath(path)
+            full_path = os.path.join(OUTPUT_DIR, path.lstrip('/').lstrip('\\'))
+            abs_path = os.path.abspath(full_path)
+            
             if os.path.isdir(abs_path):
                 if recursive:
                     file_paths = glob.glob(os.path.join(abs_path, '**', '*'), recursive=True)
@@ -1060,21 +1145,28 @@ def read_multiple_files(paths, recursive=False):
 
             for file_path in file_paths:
                 abs_file_path = os.path.abspath(file_path)
-                if os.path.isfile(abs_file_path):
-                    if abs_file_path not in file_contents:
-                        with open(abs_file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        file_contents[abs_file_path] = content
-                        results.append(f"File '{abs_file_path}' has been read and stored in the system prompt.")
-                    else:
-                        results.append(f"File '{abs_file_path}' is already in the system prompt. No need to read again.")
+                # Convert absolute path back to relative path for storing in file_contents
+                rel_path = os.path.relpath(abs_file_path, OUTPUT_DIR)
+                
+                if abs_file_path not in file_contents:
+                    with open(abs_file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    file_contents[rel_path] = content
+                    results.append(f"File '{rel_path}' has been read and stored in the system prompt.")
                 else:
-                    results.append(f"Skipped '{abs_file_path}': Not a file.")
+                    results.append(f"File '{rel_path}' is already in the system prompt. No need to read again.")
         except Exception as e:
             results.append(f"Error reading path '{path}': {str(e)}")
 
     return "\n".join(results)
 
+def list_files(path="."):
+    try:
+        full_path = os.path.join(OUTPUT_DIR, path.lstrip('/').lstrip('\\'))
+        files = os.listdir(full_path)
+        return "\n".join(files)
+    except Exception as e:
+        return f"Error listing files: {str(e)}"
 def list_files(path="."):
     try:
         files = os.listdir(path)
@@ -1259,7 +1351,14 @@ def save_chat():
     # Generate filename
     now = datetime.datetime.now()
     filename = f"Chat_{now.strftime('%H%M')}.md"
-
+    
+    # Create chat logs directory in output folder
+    chat_logs_dir = os.path.join(OUTPUT_DIR, "chat_logs")
+    os.makedirs(chat_logs_dir, exist_ok=True)
+    
+    # Full path for the chat log file
+    full_path = os.path.join(chat_logs_dir, filename)
+    
     # Format conversation history
     formatted_chat = "# Claude-3-Sonnet Engineer Chat Log\n\n"
     for message in conversation_history:
@@ -1278,12 +1377,12 @@ def save_chat():
             for content in message['content']:
                 if content['type'] == 'tool_result':
                     formatted_chat += f"### Tool Result\n\n```\n{content['content']}\n```\n\n"
-
-    # Save to file
-    with open(filename, 'w', encoding='utf-8') as f:
+    
+    # Save to file in output directory
+    with open(full_path, 'w', encoding='utf-8') as f:
         f.write(formatted_chat)
-
-    return filename
+    
+    return full_path
 
 
 tools = [
@@ -1993,13 +2092,14 @@ def display_token_usage():
     total_context_tokens = 0
 
     for model, tokens in [("Main Model", main_model_tokens),
-                          ("Tool Checker", tool_checker_tokens),
-                          ("Code Editor", code_editor_tokens),
-                          ("Code Execution", code_execution_tokens)]:
-        input_tokens = tokens['input']
-        output_tokens = tokens['output']
-        cache_write_tokens = tokens['cache_write']
-        cache_read_tokens = tokens['cache_read']
+                         ("Tool Checker", tool_checker_tokens),
+                         ("Code Editor", code_editor_tokens),
+                         ("Code Execution", code_execution_tokens)]:
+        # Safely get token values with defaults of 0
+        input_tokens = tokens.get('input', 0)
+        output_tokens = tokens.get('output', 0)
+        cache_write_tokens = tokens.get('cache_write', 0)
+        cache_read_tokens = tokens.get('cache_read', 0)
         total_tokens = input_tokens + output_tokens + cache_write_tokens + cache_read_tokens
 
         total_input += input_tokens
@@ -2046,7 +2146,11 @@ def display_token_usage():
         style="bold"
     )
 
-    console.print(table)
+    try:
+        console.print(table)
+    except Exception as e:
+        logging.error(f"Error displaying token usage table: {str(e)}")
+        console.print(Panel("Error displaying token usage table", style="bold red"))
 
 
 
@@ -2077,7 +2181,9 @@ async def test_voice_mode():
 
 async def main():
     global automode, conversation_history, use_tts, tts_enabled
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     console.print(Panel("Welcome to the Claude-3-Sonnet Engineer Chat with Multi-Agent, Image, Voice, and Text-to-Speech Support!", title="Welcome", style="bold green"))
+    console.print("Type 'help' to display usage guide and available commands.")
     console.print("Type 'exit' to end the conversation.")
     console.print("Type 'image' to include an image in your message.")
     console.print("Type 'voice' to enter voice input mode.")
@@ -2113,6 +2219,10 @@ async def main():
                 continue
         else:
             user_input = await get_user_input()
+
+        if user_input.lower() == 'help':
+            display_help()
+            continue
 
         if user_input.lower() == 'exit':
             console.print(Panel("Thank you for chatting. Goodbye!", title_align="left", title="Goodbye", style="bold green"))

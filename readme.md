@@ -136,6 +136,7 @@ Once started, you can interact with Claude Engineer by typing your queries or co
 - "Read multiple files: file1.py, file2.py, file3.py"
 
 Special commands:
+- Type 'help' to display usage guide and available commands.
 - Type 'exit' to end the conversation and close the application.
 - Type 'image' to include an image in your message for analysis.
 - Type 'reset' to reset the entire conversation without restarting the script.
